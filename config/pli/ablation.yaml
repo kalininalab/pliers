@@ -1,0 +1,73 @@
+# Model-side ablation. A single `pliers-train` call expands every list below into
+# one configuration, each repeated over `runs` seeds:
+#
+#   pliers-train config/pli/ablation.yaml \
+#       --set datamodule.filename=datasets/davis/results/prepare_all/<hash>.pkl
+#
+# As written: 3 feat_method x 5 prot node modules x 3 pools = 45 configurations
+# x 5 seeds = 225 runs. Trim to one list at a time for a one-factor-at-a-time
+# ablation, which is what you normally want to report.
+seed: 42
+runs: 5
+
+datamodule:
+  filename: null # set me
+  exp_name: ablation
+  batch_size: 128
+  num_workers: 4
+
+trainer:
+  # `auto` so a missing GPU is a slow run, not a crash; see config/pli/base.yaml.
+  accelerator: auto
+  devices: 1
+  max_epochs: 300
+  gradient_clip_val: 100
+  profiler: null
+
+early_stop:
+  patience: 30
+
+model:
+  module: class
+  monitor: val_loss
+  # concat doubles the joint embedding; the element-wise merges require the two
+  # towers to share hidden_dim, which they do here.
+  feat_method: [concat, element_l1, mult]
+  prot:
+    method: graph
+    hidden_dim: 128
+    node:
+      # transformer is the only one that consumes continuous edge attributes;
+      # filmconv expects discrete relation types; gin/gat/cheb ignore edges.
+      module: [ginconv, gatconv, chebconv, filmconv, transformer]
+      dropout: 0.1
+      hidden_dim: 128
+      num_layers: 3
+    pool:
+      # All three are sparse. The dense DiffPool that used to be here needed
+      # 6.2 GB at 1500 residues and batch_size 128, against 0.27 GB for attention,
+      # so this axis no longer needs its own reduced structures.
+      module: [mean, attention, set2set]
+      hidden_dim: 128
+  drug:
+    method: graph
+    hidden_dim: 128
+    node:
+      module: ginconv
+      dropout: 0.1
+      hidden_dim: 128
+      num_layers: 3
+    pool:
+      module: mean
+      hidden_dim: 128
+  mlp:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.2
+  optimizer:
+    module: adam
+    lr: 0.0005
+    weight_decay: 0.0001
+    reduce_lr:
+      factor: 0.1
+      patience: 10

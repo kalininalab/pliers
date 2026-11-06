@@ -1,0 +1,9 @@
+source: datasets/glass/resources
+
+prots:
+  structs:
+    method: plddt
+  features:
+    method: distance
+parse_dataset:
+  filtering: posneg

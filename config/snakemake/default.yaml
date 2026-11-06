@@ -1,0 +1,37 @@
+seed: 42
+source: null
+prots:
+  structs:
+    method: whole # whole, template, bsite, plddt
+    bsite:
+      radius: 5
+    template:
+      radius: 2
+    plddt:
+      threshold: 70
+  features:
+    method: distance # distance or esm
+    distance:
+      threshold: 7
+    node_feats: label # label or onehot
+    edge_feats: none # distance (needs node.module: transformer) or none
+drugs:
+  max_num_atoms: 150
+  node_feats: label # label, onehot, rich, glycan
+  edge_feats: none # label, onehot, none
+split_data:
+  method: random # random, target, drug, cluster_target, cluster_drug
+  train: 0.7 # test is created as a remainder of train and val
+  val: 0.2
+  # Nested, not flat: a top-level `threshold` here would collide with
+  # parse_dataset.threshold in the merged name hash of the split_data rule.
+  cluster:
+    prot_identity: 0.3 # mmseqs2 --min-seq-id, for cluster_target
+    drug_similarity: 0.6 # Tanimoto on ECFP4, for cluster_drug
+parse_dataset:
+  filtering: posneg # all, posneg, balanced
+  sampling: none # over, under, none
+  task: class # class, reg
+  unit: nM # nM (lower = stronger, e.g. Davis/GLASS) or score (higher = stronger, e.g. KIBA)
+  threshold: 100 # binarization cutoff on the scale of `unit`
+  log: false # Whether to apply logarithm with base of 10 to values (for reg, doesn't affect threshold  )

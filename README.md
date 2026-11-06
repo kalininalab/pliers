@@ -1,0 +1,250 @@
+# PLIERS
+
+[![CI](https://github.com/kalininalab/pliers/actions/workflows/ci.yaml/badge.svg)](https://github.com/kalininalab/pliers/actions/workflows/ci.yaml)
+[![codecov](https://codecov.io/gh/kalininalab/pliers/branch/main/graph/badge.svg?token=KWEX1R7FVS)](https://codecov.io/gh/kalininalab/pliers)
+[![Documentation](https://readthedocs.org/projects/pliers-bio/badge/?version=main)](https://pliers-bio.readthedocs.io/en/main/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**P**rotein–**L**igand **I**nteraction **E**valuation, **R**epresentation and **S**plitting:
+a configurable pipeline for leakage-aware protein–ligand interaction (PLI) benchmarking,
+built on protein **structure contact graphs**.
+
+> Formerly released as **RINDTI**. The import package is `pliers` and the distribution is
+> `pliers-bio`, because `pliers` on PyPI is an unrelated project. Every configuration key,
+> table column and split name is unchanged from RINDTI, so datasets and the names they are
+> stored under carry over untouched.
+
+Proteins are represented as graphs whose nodes are amino-acid residues and whose edges
+encode spatial contacts derived from a 3D structure; ligands are represented as molecular
+graphs. Both are embedded with graph neural networks, and the two embeddings are merged
+into a joint representation that an MLP scores for interaction.
+
+The repository covers the whole path from raw inputs to a trained model:
+
+```
+structures (PDB)  ─┐
+                   ├─► snakemake pipeline ─► graph dataset ─► GNN training ─► metrics
+interactions (TSV)─┘
+```
+
+## Installation
+
+Requires Python ≥ 3.11.
+
+```bash
+git clone https://github.com/kalininalab/pliers
+cd pliers
+uv pip install -e ".[dev,workflow]"
+```
+
+On a CPU-only machine, add `--torch-backend=cpu` to get much smaller wheels.
+
+One pipeline option needs an external tool that is **not** pip-installable:
+
+| Feature | Requirement | How |
+|---|---|---|
+| `split_data.method` = `cluster_target` | MMseqs2 | Provided by `workflow/envs/mmseqs.yaml`; run snakemake with `--software-deployment-method conda` |
+
+The default config (`split_data.method: random`) does not need it.
+
+## Quick start
+
+The repository ships a small test dataset, so you can run the whole thing in a minute,
+on a GPU or without one:
+
+```bash
+# 1. Build the graph dataset
+snakemake -s workflow/Snakefile -j4 --configfile config/snakemake/test.yaml
+
+# 2. Train
+pliers-train config/pli/quickstart.yaml
+
+# 3. Inspect
+tensorboard --logdir=tb_logs
+```
+
+Step 1 needs no `--software-deployment-method conda`, because the test config uses the
+default random split; add it for a `cluster_target` split, which needs MMseqs2.
+
+`config/pli/quickstart.yaml` is one short run on the dataset step 1 builds, with
+`accelerator: auto` so a GPU is used when there is one. It replaces
+`config/test/default_pli.yaml` here: that file is a test fixture which expands into
+twelve model variants and omits the keys a real run needs, so training it failed on the
+first missing key (`KeyError: 'runs'`). Use `config/pli/base.yaml` for anything you
+intend to report.
+
+## Running the benchmarks
+
+`config/pli/base.yaml` holds shared training settings; override per run rather than
+copying the file:
+
+```bash
+pliers-train config/pli/base.yaml \
+    --set datamodule.filename=datasets/davis/results/prepare_all/<hash>.pkl \
+    --set datamodule.exp_name=davis_random
+```
+
+Unknown keys are rejected, so a typo fails immediately instead of being ignored.
+
+To build every split variant of a dataset, use the sweep config:
+
+```bash
+python run_snakemake.py config/snakemake/benchmark_splits_davis.yaml --threads 8
+```
+
+There is one per dataset (`benchmark_splits_{davis,kiba,bindingdb_kd}.yaml`); they differ
+only in `source` and the `parse_dataset` unit/threshold.
+
+To reproduce the numbers in the application note, follow
+[`REPRODUCING.md`](REPRODUCING.md): clone to tables, which table comes from which file,
+and an explicit list of what cannot be reproduced exactly and why.
+
+To run the whole benchmark on the Saarland HPC, follow
+[`hpc/EXPERIMENTS.md`](hpc/EXPERIMENTS.md), which covers the campaign end to end —
+download, dataset construction, the two correctness gates, training and collection.
+[`hpc/README.md`](hpc/README.md) is the reference for the cluster setup itself.
+
+Then turn the TensorBoard logs into a table:
+
+```bash
+python -m pliers.utils.results --logdir tb_logs --output results.csv --summary true
+```
+
+## Describing a dataset
+
+`dataset_stats.py` reports what a built dataset actually contains — how many entities each
+stage discarded, the label balance, the split sizes and the graph dimensions:
+
+```bash
+python workflow/scripts/dataset_stats.py datasets/davis/results/prepare_all/*.pkl \
+    --table dataset_stats.tsv
+```
+
+`dataset_index.py` is its lightweight counterpart: `prepare_all` names its output by a
+hash of the config, so once a sweep has produced two dozen pickles this is what maps them
+back to what built them — and generates the HPC queue lines directly:
+
+```bash
+python workflow/scripts/dataset_index.py 'datasets/*/results/prepare_all/*.pkl' --table index.tsv
+```
+
+`dataset_stats.py` exits non-zero on two failures worth catching before a GPU run rather
+than after:
+
+- **leakage** — a cold split (`target`, `drug`, `cluster_target`, `cluster_drug`) with an
+  entity on both sides of the train/test boundary.
+- **a degenerate split** — an empty `val` or `test`. `split_data.split_groups` allocates
+  `int(bin_size * frac)` within bins of ten, so a group column with fewer than ten distinct
+  values sends every interaction to train.
+
+## Ablations
+
+Any list in a config is expanded into a sweep, on both sides of the pipeline.
+
+**Dataset construction** — `config/snakemake/ablation.yaml` covers filtering,
+sampling, splitting, node/edge features and structure preprocessing. Each
+combination builds a full dataset, so mind the cross product (216 as shipped):
+
+```bash
+python run_snakemake.py config/snakemake/ablation.yaml --threads 8
+python run_snakemake.py config/snakemake/ablation.yaml --threads 8 --conda false  # in the HPC image
+```
+
+The sweep exits non-zero if any individual snakemake run failed, rather than
+leaving the missing datasets to surface later as failed training jobs.
+
+**Model** — `config/pli/ablation.yaml` covers the merge method, convolution and
+pooling. One command runs every combination over `runs` seeds:
+
+```bash
+pliers-train config/pli/ablation.yaml \
+    --set datamodule.filename=datasets/davis/results/prepare_all/<hash>.pkl
+```
+
+Each configuration logs to its own directory named by what it changed
+(`node.module=gatconv-pool.module=attention`), and the collector reads the
+`hparams.yaml` Lightning writes beside each run, keeping the hyperparameters that
+vary as columns:
+
+```
+hp:model,feat_method hp:model,prot,node,module     mean      std  n
+              concat                   ginconv 0.416667 0.117851  2
+          element_l1                   gatconv 0.750000 0.353553  2
+```
+
+Both files take the full cross product. For a one-factor-at-a-time ablation —
+usually what you want to report — vary one list at a time and re-run per axis.
+
+### Binarization thresholds
+
+`parse_dataset.threshold` is interpreted on the scale given by `parse_dataset.unit`:
+
+| Dataset | unit | threshold | meaning |
+|---|---|---|---|
+| Davis, GLASS, BindingDB | `nM` | 100 | Kd/Ki ≤ 100 nM is a positive (pKd ≥ 7) |
+| KIBA | `score` | 12.1 | KIBA score ≥ 12.1 is a positive |
+
+The direction differs: for `nM` a lower value is a stronger interaction, for `score`
+a higher one is. Getting this wrong yields a single-class dataset, which the
+pipeline now rejects rather than silently emitting an empty file.
+
+## Using your own data
+
+To use your own data, point `source` in a config at a directory laid out as:
+
+```
+resources/
+├── structures/*.pdb          # one structure per protein, flat (not nested)
+├── tables/inter.tsv          # Drug_ID, Target_ID, Y
+├── tables/lig.tsv            # Drug_ID, Drug (SMILES)
+├── tables/prot.tsv           # Target_ID, Target (sequence)
+└── templates/*.pdb           # only for structs.method = bsite/template
+```
+
+`workflow/scripts/get_datasets.py` downloads and lays out Davis, KIBA, BindingDB
+(via [PyTDC](https://tdcommons.ai)) and GLASS for you, pulling structures from
+AlphaFold DB. PyTDC pins `numpy<2` and so cannot share an environment with the
+training stack; the script declares its own dependencies inline (PEP 723), so run
+it in an isolated environment:
+
+```bash
+uv run workflow/scripts/get_datasets.py davis --min_num_aa 100 --download_structures true
+```
+
+Structures must end up **flat** in `resources/structures/`, named by `Target_ID` —
+the pipeline fails with an explicit error if it finds them nested in a subdirectory.
+
+If the structures are named differently from the `Target_ID`s in your tables (Davis,
+for instance, uses gene names in its tables and UniProt accessions for its AlphaFold
+models), reconcile them by sequence:
+
+```bash
+python workflow/scripts/link_structures.py datasets/davis/resources            # dry run
+python workflow/scripts/link_structures.py datasets/davis/resources --apply true
+```
+
+It writes `structure_mapping.tsv` so the rename is reversible, and reports anything
+it could not match confidently instead of guessing.
+
+## Testing
+
+```bash
+pytest -m "not gpu and not snakemake"   # fast unit tests
+pytest -m "not gpu"                     # includes full pipeline integration tests
+```
+
+## Documentation
+
+<https://pliers-bio.readthedocs.io/en/main/>
+
+## Citation
+
+If you use PLIERS, please cite it using the metadata in [`CITATION.cff`](CITATION.cff).
+
+## Contributing
+
+See the [contributing guide](CONTRIBUTE.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

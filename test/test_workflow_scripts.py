@@ -1,0 +1,458 @@
+"""Regression tests for the pure helpers in workflow/scripts."""
+
+import os
+import tempfile
+
+import biotite.structure as struc
+import numpy as np
+import pandas as pd
+import pytest
+from cluster import cluster_drugs, dedup_sequences, dedup_smiles, parse_mmseqs_clusters, write_fasta
+from distance_based import Structure, encode_residue
+from encd import encd
+from parse_structs import (
+    best_template,
+    organic_atoms,
+    parse_structure,
+    read_structure,
+    select_plddt,
+    write_structure,
+)
+from split_data import GROUP_COL, add_group_column, allocation_pattern, split_groups, split_random
+from utils import get_type, onehot_encode
+
+
+class TestOnehotEncode:
+    """`t[position - 1] = 1` made index 0 wrap onto the last slot."""
+
+    def test_first_class_sets_first_slot(self):
+        assert onehot_encode(0, 4) == [1, 0, 0, 0]
+
+    def test_last_class_sets_last_slot(self):
+        assert onehot_encode(3, 4) == [0, 0, 0, 1]
+
+    def test_first_and_last_do_not_collide(self):
+        assert onehot_encode(0, 4) != onehot_encode(3, 4)
+
+    def test_unknown_is_all_zeros(self):
+        assert onehot_encode(None, 4) == [0, 0, 0, 0]
+
+    def test_out_of_range_rejected(self):
+        with pytest.raises(IndexError):
+            onehot_encode(4, 4)
+
+    def test_every_residue_gets_a_distinct_vector(self):
+        vocab = encd["prot"]["node"]
+        vectors = {tuple(onehot_encode(i, len(vocab))) for i in vocab.values()}
+        assert len(vectors) == len(vocab)
+
+
+class TestEncodeResidue:
+    def test_label_is_one_based(self):
+        """0 is reserved as the embedding's padding/unknown index."""
+        assert encode_residue("ala", "label") == encd["prot"]["node"]["ala"] + 1
+
+    def test_unknown_residue_label(self):
+        """Non-standard residues used to raise KeyError on encd['prot']['node']['unk']."""
+        assert encode_residue("xyz", "label") == 0
+
+    def test_unknown_residue_onehot(self):
+        assert encode_residue("xyz", "onehot") == [0] * len(encd["prot"]["node"])
+
+    def test_case_insensitive(self):
+        assert encode_residue("ALA", "label") == encode_residue("ala", "label")
+
+
+class TestMultiChain:
+    """Residue numbering restarts per chain, so keying on number alone collapsed chains."""
+
+    @staticmethod
+    def _atom(chain, num, name="ALA", x=0.0):
+        # Columns per the PDB spec: name 13-16, resName 18-20, chainID 22, resSeq 23-26.
+        return f"ATOM  {1:>5}  CA  {name} {chain}{num:>4}    {x:>8.3f}{0.0:>8.3f}{0.0:>8.3f}  1.00 50.00           C\n"
+
+    def test_two_chains_stay_distinct(self, tmp_path):
+        pdb = tmp_path / "two_chains.pdb"
+        pdb.write_text(
+            self._atom("A", 1, x=0.0)
+            + self._atom("A", 2, x=1.0)
+            + self._atom("B", 1, x=2.0)
+            + self._atom("B", 2, x=3.0)
+        )
+        struct = Structure(str(pdb), "label")
+        assert len(struct.residues) == 4, "chains A and B both number from 1"
+        assert struct.get_coords().shape == (4, 3)
+
+    def test_single_chain_unaffected(self, tmp_path):
+        pdb = tmp_path / "one_chain.pdb"
+        pdb.write_text(self._atom("A", 1) + self._atom("A", 2))
+        assert len(Structure(str(pdb), "label").residues) == 2
+
+    @pytest.mark.parametrize("node_feats", ["label", "onehot"])
+    def test_node_dtype_matches_feature_kind(self, tmp_path, node_feats):
+        """Training picks Embedding vs Linear from the tensor dtype (`utils.get_type`).
+
+        One-hot rows used to come out as int64, were read as labels, and the
+        protein encoder crashed on the first batch.
+        """
+        pdb = tmp_path / "one_chain.pdb"
+        pdb.write_text(self._atom("A", 1) + self._atom("A", 2, name="XYZ", x=1.0))
+        assert get_type(Structure(str(pdb), node_feats).get_graph(7), "x") == node_feats
+
+
+class TestSplitRandom:
+    """`val_frac` is a fraction of the whole, but was applied to the post-train remainder."""
+
+    @pytest.fixture
+    def inter(self):
+        return pd.DataFrame({"Drug_ID": [f"D{i}" for i in range(1000)], "Y": [0, 1] * 500})
+
+    @pytest.mark.parametrize(
+        ("train_frac", "val_frac"),
+        [(0.7, 0.2), (0.8, 0.1), (0.6, 0.2)],
+    )
+    def test_realised_fractions_match_config(self, inter, train_frac, val_frac):
+        out = split_random(inter, train_frac=train_frac, val_frac=val_frac)
+        counts = out["split"].value_counts(normalize=True)
+        assert counts["train"] == pytest.approx(train_frac, abs=0.02)
+        assert counts["val"] == pytest.approx(val_frac, abs=0.02)
+        assert counts["test"] == pytest.approx(1 - train_frac - val_frac, abs=0.02)
+
+    def test_nothing_lost_or_duplicated(self, inter):
+        out = split_random(inter, train_frac=0.7, val_frac=0.2)
+        assert len(out) == len(inter)
+        assert set(out["Drug_ID"]) == set(inter["Drug_ID"])
+
+
+class TestDedupSequences:
+    """W6: Davis carries exact duplicate sequences under different Target_IDs, so a
+    plain cold-target split trains and tests on the same protein."""
+
+    def test_duplicates_share_a_representative(self):
+        groups = dedup_sequences({"A": "MKV", "B": "MKV", "C": "AAA"})
+        assert groups["A"] == groups["B"]
+        assert groups["C"] != groups["A"]
+
+    def test_every_id_survives(self):
+        """Rows must not be dropped: prepare_all filters interactions against the
+        protein pickle, so a lost Target_ID silently shrinks the dataset."""
+        seqs = {"A": "MKV", "B": "MKV", "C": "AAA"}
+        assert dedup_sequences(seqs).keys() == seqs.keys()
+
+    def test_representative_is_deterministic(self):
+        """Alphabetically first, not insertion-ordered - the clustering happens
+        upstream of the split seed, so it has to be reproducible on its own."""
+        assert dedup_sequences({"B": "MKV", "A": "MKV"})["B"] == "A"
+        assert dedup_sequences({"A": "MKV", "B": "MKV"})["B"] == "A"
+
+
+class TestClusterDrugs:
+    """Leader clustering over ECFP4/Tanimoto. Never materialises the full matrix:
+    GLASS has 165,691 ligands, i.e. ~55 GB of condensed float32 distances."""
+
+    ETHANOL = "CCO"
+    PROPANOL = "CCCO"
+    BENZENE = "c1ccccc1"
+
+    def test_identical_molecules_cluster_together(self):
+        groups = cluster_drugs({"a": self.ETHANOL, "b": self.ETHANOL}, cutoff=0.6)
+        assert groups["a"] == groups["b"]
+
+    def test_dissimilar_molecules_do_not(self):
+        groups = cluster_drugs({"a": self.ETHANOL, "b": self.BENZENE}, cutoff=0.6)
+        assert groups["a"] != groups["b"]
+
+    def test_cutoff_of_one_only_merges_identical(self):
+        groups = cluster_drugs({"a": self.ETHANOL, "b": self.PROPANOL}, cutoff=1.0)
+        assert groups["a"] != groups["b"]
+
+    def test_unparseable_smiles_gets_its_own_cluster(self):
+        """It cannot be shown similar to anything, and it must not be dropped."""
+        groups = cluster_drugs({"a": self.ETHANOL, "bad": "not a molecule"}, cutoff=0.6)
+        assert groups["bad"] == "bad"
+        assert groups.keys() == {"a", "bad"}
+
+    def test_deterministic_across_input_order(self):
+        mols = {"a": self.ETHANOL, "b": self.PROPANOL, "c": self.BENZENE}
+        forward = cluster_drugs(mols, cutoff=0.4)
+        backward = cluster_drugs(dict(reversed(list(mols.items()))), cutoff=0.4)
+        assert forward == backward
+
+    def test_rejects_a_nonsense_cutoff(self):
+        with pytest.raises(ValueError, match="drug_similarity"):
+            cluster_drugs({"a": self.ETHANOL}, cutoff=0)
+
+
+class TestMmseqsIO:
+    """Target_IDs contain dots and parentheses (Davis `RSK1(KinDom.1-N-terminal)`),
+    which MMseqs2 mangles, so FASTA headers are surrogates mapped back afterwards."""
+
+    def test_roundtrip_through_surrogate_ids(self, tmp_path):
+        seqs = {"RSK1(KinDom.1-N-terminal)": "MKV", "plain": "MKV"}
+        fasta = tmp_path / "p.fasta"
+        mapping = write_fasta(seqs, str(fasta))
+        assert set(mapping.values()) == set(seqs)
+        assert "(" not in fasta.read_text().split("\n")[0]
+
+        clusters = tmp_path / "c.tsv"
+        surrogates = sorted(mapping)
+        clusters.write_text("".join(f"{surrogates[0]}\t{s}\n" for s in surrogates))
+        assignment = parse_mmseqs_clusters(str(clusters), mapping)
+        assert len(set(assignment.values())) == 1
+        assert assignment.keys() == seqs.keys()
+
+    def test_unassigned_sequence_is_an_error(self, tmp_path):
+        """Silently dropping a target would shrink the dataset downstream."""
+        seqs = {"A": "MKV", "B": "AAA"}
+        fasta = tmp_path / "p.fasta"
+        mapping = write_fasta(seqs, str(fasta))
+        clusters = tmp_path / "c.tsv"
+        clusters.write_text("s0\ts0\n")
+        with pytest.raises(ValueError, match="did not assign"):
+            parse_mmseqs_clusters(str(clusters), mapping)
+
+
+class TestGroupedSplit:
+    """W5/W6 reduce to: attach a grouping column, then split on it. `split_groups`
+    already accepts any column, so nothing about the split itself changes."""
+
+    @pytest.fixture
+    def inter(self):
+        # 60 targets, paired up into 30 groups.
+        targets = [f"T{i}" for i in range(60)]
+        return pd.DataFrame({"Target_ID": targets * 5, "Y": [0, 1] * 150})
+
+    @pytest.fixture
+    def assignment(self):
+        return {f"T{i}": f"T{i - i % 2}" for i in range(60)}
+
+    def test_no_group_spans_two_splits(self, inter, assignment):
+        """The guarantee the cold-cluster split exists to provide."""
+        out = split_groups(add_group_column(inter, "Target_ID", assignment), col_name=GROUP_COL)
+        assert (out.groupby(GROUP_COL)["split"].nunique() == 1).all()
+
+    def test_nothing_lost_or_duplicated(self, inter, assignment):
+        out = split_groups(add_group_column(inter, "Target_ID", assignment), col_name=GROUP_COL)
+        assert len(out) == len(inter)
+        assert set(out["Target_ID"]) == set(inter["Target_ID"])
+
+    def test_unknown_id_becomes_its_own_group(self, inter):
+        """An ID missing from the assignment must not be dropped or crash."""
+        out = add_group_column(inter, "Target_ID", {"T0": "T0"})
+        assert out.loc[out["Target_ID"] == "T5", GROUP_COL].unique().tolist() == ["T5"]
+        assert len(out) == len(inter)
+
+    def test_all_three_splits_are_populated(self, inter, assignment):
+        out = split_groups(add_group_column(inter, "Target_ID", assignment), col_name=GROUP_COL)
+        assert set(out["split"]) == {"train", "val", "test"}
+
+
+class TestParseStructs:
+    """The biotite replacement for the PyMOL structure-parsing scripts."""
+
+    QUERY = "test/test_data/resources/structures/A5A4K9.pdb"
+    TEMPLATE = "test/test_data/resources/templates/5cgd.pdb"
+
+    @pytest.fixture
+    def query(self):
+        return read_structure(self.QUERY)
+
+    @pytest.fixture
+    def template(self):
+        return read_structure(self.TEMPLATE)
+
+    def test_plddt_keeps_whole_residues(self, query):
+        """The PyMOL version thresholded atoms, so a residue could lose its CA.
+
+        `distance_based.Structure` builds one node per CA, so a residue without one
+        silently vanished from the graph while its neighbours stayed.
+        """
+        selected = select_plddt(query, 70)
+        kept = set(zip(selected.chain_id, selected.res_id, strict=True))
+        assert len(kept) == struc.get_residue_count(selected)
+        # Every atom of a kept residue is present, not only those above the threshold.
+        in_kept = [(c, r) in kept for c, r in zip(query.chain_id, query.res_id, strict=True)]
+        assert selected.array_length() == sum(in_kept)
+
+    def test_plddt_threshold_is_exclusive_and_ordered(self, query):
+        """A higher threshold may never keep more than a lower one."""
+        counts = [struc.get_residue_count(select_plddt(query, t)) for t in (50, 70, 90)]
+        assert counts == sorted(counts, reverse=True)
+        assert 0 < counts[-1] < struc.get_residue_count(query)
+
+    def test_plddt_keeps_only_confident_residues(self, query):
+        selected = select_plddt(query, 70)
+        assert (selected[selected.atom_name == "CA"].b_factor > 70).all()
+
+    def test_best_template_picks_the_higher_score(self, query):
+        """With one real template and one copy of the query, the query must win."""
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            twin = os.path.join(tmp, "twin.pdb")
+            shutil.copy(self.QUERY, twin)
+            _, path, score = best_template(query, [self.TEMPLATE, twin])
+        assert path == twin
+        assert score > 0.9  # a structure aligned against itself
+
+    def test_best_template_needs_a_template(self, query):
+        with pytest.raises(ValueError, match="no templates"):
+            best_template(query, [])
+
+    def test_organic_excludes_water_and_ions(self, template):
+        organic = organic_atoms(template)
+        assert organic.array_length() > 0
+        assert not struc.filter_solvent(organic).any()
+        assert not struc.filter_monoatomic_ions(organic).any()
+        assert not struc.filter_amino_acids(organic).any()
+
+    @pytest.mark.parametrize("method", ["bsite", "template"])
+    def test_selection_is_a_strict_subset(self, method, query):
+        """Both template methods narrow the structure; neither may invent residues."""
+        params = {"bsite": {"radius": 5}, "template": {"radius": 2}}
+        result = parse_structure(self.QUERY, method, params, [self.TEMPLATE])
+        assert 0 < struc.get_residue_count(result) < struc.get_residue_count(query)
+        assert set(result.res_id) <= set(query.res_id)
+
+    def test_bsite_stays_near_the_ligand(self, query):
+        """Every selected residue must have an atom within the radius, by construction."""
+        radius = 5
+        result = parse_structure(self.QUERY, "bsite", {"bsite": {"radius": radius}}, [self.TEMPLATE])
+        fitted, _, _ = best_template(query, [self.TEMPLATE])
+        ligand = organic_atoms(fitted)
+        distances = np.linalg.norm(result.coord[:, None, :] - ligand.coord[None, :, :], axis=-1)
+        # Per residue, not per atom: `br.` pulls in atoms that are themselves far away.
+        for res_id in set(result.res_id):
+            assert distances[result.res_id == res_id].min() <= radius
+
+    def test_empty_selection_is_rejected(self):
+        """The old pipeline wrote a zero-residue PDB and failed much later."""
+        with pytest.raises(ValueError, match="selected no atoms"):
+            parse_structure(self.QUERY, "plddt", {"plddt": {"threshold": 100}})
+
+    def test_unknown_method_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown structure method"):
+            parse_structure(self.QUERY, "whole", {})
+
+    def test_roundtrip_is_readable_by_the_graph_builder(self, query):
+        """The output has to stay a plain PDB: `distance_based` parses fixed columns."""
+        result = select_plddt(query, 70)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "out.pdb")
+            write_structure(path, result)
+            parsed = Structure(path, "label")
+        assert len(parsed.residues) == struc.get_residue_count(result)
+
+
+class TestSplitGroups:
+    """`min(len(subset), int(bin_size * frac))` measured the proportions against
+    bin_size rather than the bin in hand, so the final partial bin was always biased
+    toward train and a dataset with fewer than bin_size entities went entirely to it."""
+
+    @staticmethod
+    def _inter(n_entities, rows_each=5):
+        return pd.DataFrame(
+            {"Target_ID": [f"T{i}" for i in range(n_entities)] * rows_each, "Y": 0},
+        )
+
+    @staticmethod
+    def _per_entity(out):
+        return out.drop_duplicates("Target_ID")["split"].value_counts().to_dict()
+
+    def test_pattern_sums_to_bin_size(self):
+        assert len(allocation_pattern(10, 0.7, 0.2)) == 10
+        assert allocation_pattern(10, 0.7, 0.2).count("train") == 7
+        assert allocation_pattern(10, 0.7, 0.2).count("val") == 2
+        assert allocation_pattern(10, 0.7, 0.2).count("test") == 1
+
+    def test_pattern_rejects_impossible_fractions(self):
+        with pytest.raises(ValueError, match="exceed 1"):
+            allocation_pattern(10, 0.8, 0.5)
+
+    @pytest.mark.parametrize("n_entities", [60, 200])
+    def test_full_bins_hit_the_configured_fractions(self, n_entities):
+        counts = self._per_entity(split_groups(self._inter(n_entities)))
+        assert counts["train"] / n_entities == pytest.approx(0.7, abs=0.02)
+        assert counts["val"] / n_entities == pytest.approx(0.2, abs=0.02)
+        assert counts["test"] / n_entities == pytest.approx(0.1, abs=0.02)
+
+    def test_fewer_entities_than_a_bin_do_not_all_go_to_train(self):
+        """Five targets used to produce train=5, val=0, test=0, every time.
+
+        Five entities cannot be divided 70/20/10 exactly, so which splits a single draw
+        reaches is chance - the guarantee is that train no longer swallows all of them.
+        """
+        counts = self._per_entity(split_groups(self._inter(5)))
+        assert counts.get("train", 0) < 5
+        assert sum(counts.values()) == 5
+
+    def test_every_split_is_reachable_with_fewer_entities_than_a_bin(self):
+        """Across draws, all three splits come up - the allocation is unbiased, not
+        merely less biased."""
+        seen = set()
+        for _ in range(50):
+            seen.update(self._per_entity(split_groups(self._inter(5))))
+        assert seen == {"train", "val", "test"}
+
+    def test_partial_bin_is_not_all_train(self):
+        """Ranks 10-12 of a 13-entity list form the short bin."""
+        seen = set()
+        for _ in range(25):
+            out = split_groups(self._inter(13))
+            per_entity = out.drop_duplicates("Target_ID").set_index("Target_ID")["split"]
+            seen.update(per_entity[f"T{i}"] for i in (10, 11, 12))
+        assert seen == {"train", "val", "test"}
+
+    def test_every_entity_is_assigned(self):
+        out = split_groups(self._inter(37))
+        assert out["split"].notna().all()
+        assert set(out["Target_ID"]) == {f"T{i}" for i in range(37)}
+
+    def test_an_entity_lands_in_exactly_one_split(self):
+        out = split_groups(self._inter(37))
+        per_entity = out.groupby("Target_ID")["split"].nunique()
+        assert (per_entity == 1).all()
+
+
+class TestDedupSmiles:
+    """The ligand-side counterpart of dedup_sequences, which had no counterpart: a
+    `target` split collapsed identical sequences while a `drug` split grouped on the raw
+    Drug_ID, so the two cold splits controlled leakage to different standards."""
+
+    def test_identical_molecules_share_a_representative(self):
+        groups = dedup_smiles({"A": "c1ccccc1", "B": "C1=CC=CC=C1", "C": "CCO"})
+        assert groups["A"] == groups["B"]
+        assert groups["C"] != groups["A"]
+
+    def test_representative_is_stable(self):
+        """Alphabetically first, so a rebuild reproduces the same grouping."""
+        assert dedup_smiles({"B": "CCO", "A": "OCC"})["B"] == "A"
+
+    def test_unparseable_smiles_gets_its_own_group(self):
+        groups = dedup_smiles({"A": "CCO", "X": "not a molecule", "Y": "also not"})
+        assert groups["X"] == "X"
+        assert groups["Y"] == "Y"
+
+    def test_nothing_is_dropped(self):
+        ids = {"A": "CCO", "B": "OCC", "X": "!!!", "C": "c1ccccc1"}
+        assert set(dedup_smiles(ids)) == set(ids)
+
+
+class TestEsmTruncation:
+    """ESM-1b's context stops at 1022 residues and the pipeline cut longer chains
+    silently. The structure arm uses the whole chain, so in the comparison the two arms
+    are meant to make, a truncated protein is a confound that has to be disclosed."""
+
+    @staticmethod
+    def _report(sequences):
+        # Imported lazily: prot_esm pulls in fair-esm, an optional extra.
+        pytest.importorskip("esm")
+        from prot_esm import truncation_report
+
+        return truncation_report(sequences)
+
+    def test_short_sequences_are_untouched(self):
+        assert self._report({"a": "M" * 100, "b": "M" * 1022}) == (0, 0)
+
+    def test_counts_and_worst_excess_are_reported(self):
+        assert self._report({"a": "M" * 1522, "b": "M" * 1100, "c": "M" * 10}) == (2, 500)

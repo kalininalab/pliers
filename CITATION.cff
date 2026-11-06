@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "PLIERS: a configurable pipeline for leakage-aware protein-ligand interaction benchmarking"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - given-names: Ilya
+    family-names: Senatorov
+    email: ilya.senatorov@helmholtz-hips.de
+    affiliation: Helmholtz Institute for Pharmaceutical Research Saarland
+repository-code: "https://github.com/kalininalab/pliers"
+url: "https://pliers-bio.readthedocs.io"
+abstract: >-
+  PLIERS - Protein-Ligand Interaction Evaluation, Representation and Splitting - turns
+  the preparation of protein-ligand interaction benchmarks into configuration. It
+  represents proteins as residue-level contact graphs built from 3D structures - one
+  node per residue, edges between residues whose C-alpha atoms fall within a distance
+  cutoff - or as ESM-1b sequence embeddings, and ligands as molecular graphs, encoding
+  both with graph neural networks. It ships a reproducible Snakemake pipeline that turns
+  protein structures and interaction tables into ready-to-train graph datasets under
+  five split protocols, and scores every run against label-only baselines so that
+  performance attributable to dataset composition is separated from the rest.
+keywords:
+  - protein-ligand interaction
+  - graph neural networks
+  - protein contact graph
+  - structural bioinformatics
+  - data leakage
+license: MIT
+version: 4.0.0

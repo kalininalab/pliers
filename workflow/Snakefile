@@ -1,0 +1,23 @@
+from snakemake.utils import validate
+from scripts.snakemake_helper import SnakemakeHelper
+import os
+import glob
+
+
+configfile: "config/snakemake/default.yaml"
+
+
+validate(config, schema="schemas/config.schema.yaml")
+sh = SnakemakeHelper(config, 8)
+
+
+include: "rules/sanity_checks.smk"
+include: "rules/prots.smk"
+include: "rules/drugs.smk"
+include: "rules/data.smk"
+
+
+rule all:
+    input:
+        final_output,
+        rules.baseline.output.baseline,

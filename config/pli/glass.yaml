@@ -1,0 +1,68 @@
+# GLASS (GPCRs) - the non-kinase dataset, for checking that nothing here is specific to
+# the kinome. Identical to config/pli/base.yaml apart from the batch size: GLASS is the
+# largest supported dataset (~660 targets, ~166k ligands), so a larger batch keeps the
+# epoch count sane.
+#
+#   python run_snakemake.py config/snakemake/glass.yaml --threads 16
+#   pliers-train config/pli/glass.yaml \
+#       --set datamodule.filename=datasets/glass/results/prepare_all/<hash>.pkl
+#
+# glass.yaml on the pipeline side uses `structs.method: plddt`, which drops the
+# low-confidence tails AlphaFold predicts for GPCR termini.
+seed: 42
+runs: 5 # report mean +- std over 5 seeds
+
+datamodule:
+  filename: null # set me: datasets/glass/results/prepare_all/<hash>.pkl
+  exp_name: glass
+  batch_size: 512
+  num_workers: 4
+
+trainer:
+  # `auto` so a missing GPU is a slow run, not a crash; see config/pli/base.yaml.
+  accelerator: auto
+  devices: 1
+  max_epochs: 300
+  gradient_clip_val: 100
+  profiler: null
+
+early_stop:
+  patience: 30
+
+model:
+  module: class
+  monitor: val_loss
+  feat_method: concat
+  prot:
+    method: graph
+    hidden_dim: 128
+    node:
+      module: ginconv
+      dropout: 0.1
+      hidden_dim: 128
+      num_layers: 3
+    pool:
+      module: mean
+      hidden_dim: 128
+  drug:
+    method: graph
+    hidden_dim: 128
+    node:
+      module: ginconv
+      dropout: 0.1
+      hidden_dim: 128
+      num_layers: 3
+    pool:
+      module: mean
+      hidden_dim: 128
+  mlp:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.2
+  optimizer:
+    module: adam
+    lr: 0.0005
+    weight_decay: 0.0001
+    reduce_lr:
+      factor: 0.1
+      patience: 10

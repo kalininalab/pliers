@@ -1,0 +1,160 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+
+description: snakemake configuration file
+
+type: object
+additionalProperties: false
+required: [source, prots, drugs, split_data, parse_dataset]
+
+properties:
+  seed:
+    type: number
+  source:
+    type: string
+  prots:
+    type: object
+    additionalProperties: false
+    required: [structs, features]
+    properties:
+      structs:
+        type: object
+        additionalProperties: false
+        required: [method]
+        properties:
+          method:
+            type: string
+            enum: [whole, template, bsite, plddt]
+          bsite:
+            type: object
+            additionalProperties: false
+            properties:
+              radius:
+                type: number
+          template:
+            type: object
+            additionalProperties: false
+            properties:
+              radius:
+                type: number
+          plddt:
+            type: object
+            additionalProperties: false
+            properties:
+              threshold:
+                type: number
+      features:
+        type: object
+        additionalProperties: false
+        required: [method, node_feats, edge_feats]
+        properties:
+          method:
+            type: string
+            enum: [distance, esm]
+          distance:
+            type: object
+            additionalProperties: false
+            properties:
+              threshold:
+                type: number
+          node_feats:
+            type: string
+            enum: [label, onehot]
+          edge_feats:
+            type: string
+            enum: [distance, none]
+            description: >-
+              'distance' keeps the CA-CA distance as a continuous edge attribute.
+              Only the 'transformer' node module consumes it; GIN/GAT/Cheb ignore
+              edges entirely and FiLM expects discrete relation types.
+  drugs:
+    type: object
+    additionalProperties: false
+    required: [max_num_atoms, node_feats, edge_feats]
+    properties:
+      max_num_atoms:
+        type: number
+      node_feats:
+        type: string
+        enum: [label, onehot, rich, glycan]
+        description: >-
+          'label'/'onehot' describe an atom by element only. 'rich' adds degree,
+          formal charge, hydrogen count, hybridisation, aromaticity, ring
+          membership and chirality.
+      edge_feats:
+        type: string
+        enum: [label, onehot, none]
+  split_data:
+    type: object
+    additionalProperties: false
+    required: [method, train, val, cluster]
+    properties:
+      method:
+        type: string
+        enum: [random, target, drug, cluster_target, cluster_drug]
+        description: >-
+          'random' splits interactions; 'target'/'drug' are cold-entity splits on the
+          raw ID, except that 'target' additionally merges exact duplicate sequences,
+          which Davis and friends contain. 'cluster_target'/'cluster_drug' are cold
+          splits on similarity clusters, so no test entity resembles a training one.
+          One factor at a time deliberately: clustering both sides at once leaves
+          roughly (1-train-val)^2 of the interactions in test, which is a different
+          and much harder experiment.
+      cluster:
+        type: object
+        additionalProperties: false
+        required: [prot_identity, drug_similarity]
+        properties:
+          prot_identity:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 1
+            description: >-
+              MMseqs2 --min-seq-id for 'cluster_target'. 0.3 is the PDB/PDBbind
+              convention for "not homologous".
+          drug_similarity:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 1
+            description: Tanimoto cutoff on ECFP4 fingerprints, for 'cluster_drug'.
+      train:
+        type: number
+        exclusiveMinimum: 0
+        exclusiveMaximum: 1
+      val:
+        type: number
+        exclusiveMinimum: 0
+        exclusiveMaximum: 1
+      test:
+        type: number
+        exclusiveMinimum: 0
+        exclusiveMaximum: 1
+  parse_dataset:
+    type: object
+    additionalProperties: false
+    required: [filtering, sampling, task, threshold, unit]
+    properties:
+      filtering:
+        type: string
+        enum: [all, posneg, balanced]
+      sampling:
+        type: string
+        enum: [over, under, none]
+      task:
+        type: string
+        enum: [class, reg]
+      unit:
+        type: string
+        enum: [nM, score]
+        description: >-
+          Scale of the Y column. 'nM' means a dissociation/inhibition constant where
+          LOWER is a stronger interaction (Davis, GLASS, BindingDB); positives are
+          Y < threshold. 'score' means a unitless affinity score where HIGHER is
+          stronger (KIBA); positives are Y >= threshold. Getting this wrong yields a
+          single-class dataset, which the pipeline now rejects.
+      threshold:
+        type: number
+        description: >-
+          Binarization cutoff, on the scale given by 'unit'. Conventional values:
+          Davis 100 nM (pKd 7), GLASS 100 nM, KIBA 12.1 (score).
+      log:
+        type: boolean

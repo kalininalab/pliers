@@ -1,0 +1,24 @@
+# Sweep config for run_snakemake.py: builds every split variant of Davis.
+# The KIBA and BindingDB_Kd counterparts sit beside this file; they differ only in
+# `source` and the parse_dataset unit/threshold.
+#
+#   python run_snakemake.py config/snakemake/benchmark_splits_davis.yaml --threads 8
+#
+# IterDict expands the list below into one snakemake run per split, so this
+# produces five prepare_all pickles: random, cold-drug, cold-target (deduplicated),
+# and the two similarity-clustered cold splits.
+#
+# The cluster splits need MMseqs2. Locally, run_snakemake.py's `--conda true` default
+# builds workflow/envs/mmseqs.yaml on first use. Inside the HPC image pass
+# `--conda false`: MMseqs2 is already on PATH there and there is no conda.
+source: datasets/davis/resources
+prots:
+  structs:
+    method: whole
+parse_dataset:
+  unit: nM
+  threshold: 100
+split_data:
+  # One factor at a time: no `cluster_both`, because clustering proteins and drugs
+  # simultaneously leaves ~(1-train-val)^2 of the interactions in test.
+  method: [random, drug, target, cluster_target, cluster_drug]

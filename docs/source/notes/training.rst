@@ -1,0 +1,121 @@
+Training and experiments
+========================
+
+Running a single model
+----------------------
+
+``config/pli/base.yaml`` holds the shared training settings. Rather than copying it
+per experiment, override values on the command line:
+
+.. code:: console
+
+    pliers-train config/pli/base.yaml \
+        --set datamodule.filename=datasets/davis/results/prepare_all/<hash>.pkl \
+        --set datamodule.exp_name=davis_random
+
+``--set`` is repeatable and takes a dotted path. Values are parsed as YAML, so
+``0.001``, ``true``, ``null`` and ``[a, b]`` all arrive with the right type. Only
+keys that already exist can be set, so a typo fails immediately rather than being
+silently ignored.
+
+Because the pipeline names its outputs by config hash, the pickle path is not
+predictable - glob the directory rather than hardcoding it.
+
+Metrics
+-------
+
+Classification reports accuracy, AUROC, average precision (AUPRC) and Matthews
+correlation coefficient. Regression reports MAE, MSE, explained variance, Pearson,
+Spearman, the concordance index and :math:`r_m^2`.
+
+.. Note::
+    AUPRC is the one to read on these datasets. Davis is roughly 7% positive, and
+    AUROC flatters heavily at that imbalance. The concordance index and
+    :math:`r_m^2` are the two the DeepDTA-to-GEFA lineage quotes, so they are what a
+    comparison against that literature needs. The concordance index here is the
+    Gonen-Heller index, not torchmetrics' ``ConcordanceCorrCoef``, which is Lin's CCC
+    and a different statistic.
+
+None of these numbers means much on its own: how high a metric can go depends on the
+split, and a random split is largely solvable from label frequencies alone. Score a
+run against the label-only floor the pipeline writes beside every split:
+
+.. code:: console
+
+    python -m pliers.models.pli.baseline.run score \
+        '{"auc": 0.887}' datasets/davis/results/baseline/<split name>.json
+
+That reports BOSS, the fraction of the gap between the floor and a perfect score that
+the model closes. 0 means it only matched what the labels already gave away.
+
+Sweeps and ablations
+--------------------
+
+Any list value in the training config is expanded into one run per combination,
+each repeated over ``runs`` seeds:
+
+.. code:: yaml
+
+    model:
+      feat_method: [concat, element_l1]
+      prot:
+        node:
+          module: [ginconv, gatconv]
+
+That is four configurations. ``config/pli/ablation.yaml`` sweeps the merge method,
+convolution and pooling; as shipped that is 3 x 5 x 3 = 45 configurations over
+``runs: 5`` seeds, so 225 runs. For the one-factor-at-a-time ablation that usually
+gets reported, vary one list at a time instead and re-run per axis.
+
+Each configuration logs to its own directory tagged with what it changed, for
+example ``node.module=gatconv-pool.module=attention``. Tags use the shortest
+unambiguous suffix of the config path, so ``node.module`` and ``pool.module`` stay
+distinguishable.
+
+Collecting results
+------------------
+
+Lightning writes a ``hparams.yaml`` beside every run. The collector walks the log
+tree, joins metrics to those settings, and keeps only the hyperparameters that
+actually vary - the columns an ablation is grouped by:
+
+.. code:: console
+
+    python -m pliers.utils.results --logdir tb_logs --output results.csv --summary true
+
+.. code::
+
+    hp:model,feat_method hp:model,prot,node,module     mean      std  n
+                  concat                   ginconv 0.416667 0.117851  2
+              element_l1                   gatconv 0.750000 0.353553  2
+
+``--reduction`` chooses how each metric's epoch series collapses to one number:
+``last`` (default), ``best_max`` for metrics where higher is better, or
+``best_min`` for losses. The same functions are importable:
+
+.. code:: python
+
+    from pliers.utils import collect, summarise
+
+    results = collect("tb_logs", reduction="best_max")
+    table = summarise(results)
+
+Baselines
+---------
+
+Frequency-prior baselines use no features at all, and expose how much of a score
+comes from popularity bias rather than from the ligand and protein graphs:
+
+.. code:: console
+
+    python -m pliers.models.pli.baseline.run \
+        protein_ligand_max datasets/davis/results/split_data/<hash>.tsv
+
+They report on the held-out ``test`` split and return mean/std over ``n_runs``
+repeats. On Davis this prints something like::
+
+    Results (test, n=1)   ACC: 0.928   AUC: 0.843   AUPRC: 0.363   MCC: 0.066
+
+which is worth internalising before reading any model score: knowing nothing but
+how often each ligand and protein appears already gives 93% accuracy and 0.84 AUROC
+on a dataset that is 7% positive. AUPRC and MCC are the metrics that show it.

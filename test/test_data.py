@@ -1,0 +1,20 @@
+import pytest
+import torch
+
+from pliers.data import TwoGraphData
+
+label_node = torch.tensor([0, 1, 2], dtype=torch.long)
+label_edge = torch.tensor(list(range(16)), dtype=torch.long)
+onehot_node = torch.tensor([[1, 0], [0, 1], [1, 0]], dtype=torch.float32)
+onehot_edge = torch.tensor([[0, 1, 0, 0], [1, 0, 0, 0]], dtype=torch.float32)
+
+
+class TestTwoGraphData:
+    @pytest.mark.parametrize("variant", [label_node, onehot_node])
+    def test_n_nodes(self, variant):
+        tgd = TwoGraphData(a_x=variant)
+        assert tgd.n_nodes("a_") == 3
+
+    def test_n_edges(self):
+        tgd = TwoGraphData(a_edge_index=torch.tensor([[0, 1], [1, 0]]), dtype=torch.long)
+        assert tgd.n_edges("a_") == 2

@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tooling caches
+.coverage
+coverage.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Snakemake
+.snakemake/
+
+# Docs
+docs/_build/
+docs/build/
+docs/source/_build/
+docs/source/_autosummary/
+
+# Data & results (fetched and built via workflow/scripts/, never committed).
+# The generated directories are root-anchored: unanchored `data/` and `report/` also
+# matched `pliers/data/` and `workflow/report/`, so a new file in either source
+# directory was silently unstageable. `results/` stays unanchored - the workflow writes
+# it as <source>/../results, which is not at the root.
+/datasets/
+/data/
+results/
+/report/
+*logs/
+*.pkl
+*graphify*
+
+# Editor
+.vscode/
+.idea/
+
+# uv lockfile is intentionally tracked
+!uv.lock
+
+# Hypothesis
+.hypothesis/
+
+# Writing plan, not repo code
+/PAPER_PLAN.md
+
+# Claude Code scratch. Only the worktrees and local overrides - .claude/settings.json is
+# project configuration and belongs in the repo.
+.claude/worktrees/
+.claude/settings.local.json
