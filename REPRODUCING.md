@@ -41,7 +41,7 @@ git checkout v4.0.0
 
 v4.0.0 is the first release under the name PLIERS. The published runs were made on the
 line that became v3.0.0, under the project's former name RINDTI, in
-[`ilsenatorov/RINDTI`](https://github.com/ilsenatorov/RINDTI); v4.0.0 is that code with
+[`ilsenatorov/rindti`](https://github.com/ilsenatorov/rindti), at tag `v3.0.0`; v4.0.0 is that code with
 the package, the CLI and the prose renamed and nothing else. Two fixes that ran as
 uncommitted edits on the cluster are in the tree (the PyG cache key, and the
 `max_iterations` cap in `align_template`); so are the 17 paper-table configs, the 14
