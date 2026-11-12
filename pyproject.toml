@@ -49,13 +49,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-workflow = ["snakemake>=9", "pulp>=2.8", "jsonschema>=4.23", "joblib>=1.4", "biotite>=1.4"]
+workflow = ["snakemake>=9", "pulp>=2.8", "jsonschema>=4.23", "joblib>=1.4", "biotite>=1.4,<2"]
 esm = ["fair-esm>=2.0"]
 # NOTE: the dataset downloader (workflow/scripts/get_datasets.py) needs PyTDC,
 # which pins numpy<2 and cannot share an environment with modern torch.
 # It declares its own deps inline (PEP 723): `uv run workflow/scripts/get_datasets.py`.
 data = ["gdown>=5.2", "requests>=2.32"]
-baseline = ["xgboost>=2.1"]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5.0",

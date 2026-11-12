@@ -1,68 +1,79 @@
 Quick start guide
 =================
 
+This assumes you have followed :doc:`installation` and the environment is active
+(``source .venv/bin/activate``). Run every command from the repository root.
 
-Once you have succesfully installed the package, you can start using it.
+The bundled example
+-------------------
 
+The repository ships a small test dataset (five proteins, five ligands), so the whole
+path from structures to a trained model takes about a minute, with or without a GPU.
 
-Downloading the dataset
-------------------------
+.. code:: console
 
-For this tutorial we will work with the `GLASS dataset <https://zhanggroup.org/GLASS/>`_
+    # 1. Build the graph dataset (about 30 s)
+    snakemake -s workflow/Snakefile -j4 --configfile config/snakemake/test.yaml
 
-To download it, we will use the following code:
+    # 2. Train one short run (a few seconds on a CPU)
+    pliers-train config/pli/quickstart.yaml
+
+    # 3. Inspect
+    tensorboard --logdir=tb_logs
+
+Step 1 writes ``test/test_data/results/prepare_all/nlpncnndlwr_5f8b1046.pkl``. The name
+is derived from the snakemake config, which is why ``config/pli/quickstart.yaml`` can
+point at it directly. Step 2 ends by printing test metrics. With only three test
+interactions they show that everything works, not how good the model is.
+
+To turn the logs into a table:
+
+.. code:: console
+
+    python -m pliers.utils.results --logdir tb_logs --output results.csv --summary true
+
+A real dataset: GLASS
+---------------------
+
+The same three steps on the `GLASS dataset <https://zhanggroup.org/GLASS/>`_, a set
+of GPCR-ligand interactions.
+
+**Download.** ``get_datasets.py`` needs PyTDC, which pins ``numpy<2`` and so cannot share
+an environment with the training stack. The script declares its own dependencies
+(PEP 723), so run it with ``uv run``, not ``python``:
 
 .. code:: console
 
     uv run workflow/scripts/get_datasets.py glass --min_num_aa 250 --download_structures true
 
+``--min_num_aa 250`` drops structures shorter than 250 residues, which for GPCRs are
+fragments. The data lands in ``datasets/glass/resources``, with AlphaFold models in
+``structures/``.
 
-Since this is a dataset of GPCRs, we do not accept protein structures with less than 250 aminoacids.
-
-This will create a new folder in ``datasets/glass/resources``, which will contain all the necessary information.
-
-.. Note::
-    ``get_datasets.py`` is run with ``uv run`` rather than ``python``. It needs
-    PyTDC, which pins ``numpy<2`` and so cannot share an environment with the
-    training stack, so the script declares its own dependencies inline (PEP 723)
-    and runs isolated.
-
-Running the Snakemake pipeline
-------------------------------
-
-Once our dataset is downloaded, we can run the snakemake pipline with the following command:
+**Build the dataset.**
 
 .. code:: console
 
-    snakemake -j 10 --software-deployment-method conda --configfile config/snakemake/glass.yaml
+    snakemake -s workflow/Snakefile -j 10 --configfile config/snakemake/glass.yaml
 
+The GLASS config uses a random split, so no conda environment is needed. Add
+``--software-deployment-method conda`` only for ``split_data.method: cluster_target``,
+which needs MMseqs2 (see :doc:`installation`).
 
-This will create the final pickle file for the GLASS dataset, which will be located in the ``datasets/glass/results/prepare_all`` folder.
+**Find the file it built.** The output is named by a hash of the snakemake config, so
+every shipped training config leaves ``datamodule.filename`` as ``null``. List what you
+have built, and the config behind each file:
 
-.. Note::
-    Some parts of the config rely on more than just the base file downloaded in the previous step.
+.. code:: console
 
+    python workflow/scripts/dataset_index.py 'datasets/glass/results/prepare_all/*.pkl'
 
-Running the training
----------------------
-
-We can run the training script with the following code:
+**Train.** Pass the path from the listing:
 
 .. code:: console
 
     pliers-train config/pli/glass.yaml \
         --set datamodule.filename=datasets/glass/results/prepare_all/<hash>.pkl
 
-``datamodule.filename`` is deliberately ``null`` in every shipped config: the pickle is
-named by a hash of the snakemake config that produced it, so hardcoding one would point
-at whichever dataset happened to exist when the file was written.
-
-
-
-This will start the training process, which will take a while.
-
-You can monitor the progress of the training by running the following command:
-
-.. code:: console
-
-    tensorboard --logdir=tb_logs
+Training on the full dataset takes a while. Follow it with
+``tensorboard --logdir=tb_logs``.

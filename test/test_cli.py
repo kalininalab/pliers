@@ -2,7 +2,7 @@
 
 import pytest
 
-from pliers.cli import check_task_matches
+from pliers.cli import check_dataset_file, check_task_matches
 
 
 class _FakeDataModule:
@@ -33,3 +33,21 @@ class TestCheckTaskMatches:
     def test_dataset_without_recorded_task_is_allowed(self):
         """Datasets built before the task was recorded must still load."""
         check_task_matches(_FakeDataModule(None), "class")
+
+
+class TestCheckDatasetFile:
+    """Every shipped config leaves `datamodule.filename` null; say so instead of a TypeError."""
+
+    @pytest.mark.parametrize("config", [{"datamodule": {"filename": None}}, {"datamodule": {}}, {}])
+    def test_unset_filename_names_the_key(self, config):
+        with pytest.raises(ValueError, match="datamodule.filename is not set"):
+            check_dataset_file(config)
+
+    def test_missing_file_names_the_path(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="nope.pkl"):
+            check_dataset_file({"datamodule": {"filename": str(tmp_path / "nope.pkl")}})
+
+    def test_existing_file_passes(self, tmp_path):
+        path = tmp_path / "data.pkl"
+        path.write_bytes(b"")
+        check_dataset_file({"datamodule": {"filename": str(path)}})

@@ -22,12 +22,18 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python has no upper bound, so a new machine usually gets the newest
+        # interpreter; test every version a fresh `uv venv` can pick.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Create virtual environment
         run: uv venv
       - name: Install
@@ -72,7 +78,7 @@ jobs:
       - name: Install
         run: uv pip install -e ".[docs]" --torch-backend=cpu
       - name: Build docs
-        run: uv run sphinx-build -b html docs/source docs/_build
+        run: uv run sphinx-build -W --keep-going -b html docs/source docs/_build
 
   build:
     runs-on: ubuntu-latest

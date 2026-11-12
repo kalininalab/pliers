@@ -1,7 +1,8 @@
 Installation
 ============
 
-PLIERS requires **Python 3.11 or newer**.
+PLIERS requires **Python 3.11 or newer**, ``git``, and either pip or
+`uv <https://docs.astral.sh/uv/getting-started/installation/>`_.
 
 Installing the package
 ----------------------
@@ -10,15 +11,27 @@ Installing the package
 
     git clone https://github.com/kalininalab/pliers
     cd pliers
+    uv venv
+    source .venv/bin/activate
     uv pip install -e ".[dev,workflow]"
 
 On a machine without a GPU, add ``--torch-backend=cpu`` to pull much smaller wheels.
+``uv pip install`` needs the environment that ``uv venv`` creates; without one it stops
+with *No virtual environment found*. Every later command assumes it is active.
 
 ``pip`` works just as well if you prefer it:
 
 .. code:: console
 
     python -m venv .venv && source .venv/bin/activate
+    pip install -e ".[dev,workflow]"
+
+pip has no ``--torch-backend``; on a CPU-only machine install the CPU build of PyTorch
+first and pip will keep it:
+
+.. code:: console
+
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
     pip install -e ".[dev,workflow]"
 
 Optional dependency groups:
@@ -29,7 +42,6 @@ Optional dependency groups:
     which pins ``numpy<2`` and so cannot share an environment with the training stack;
     ``workflow/scripts/get_datasets.py`` declares it inline (PEP 723) and runs under
     ``uv run`` in an environment of its own.
-  - ``baseline`` - XGBoost baselines
   - ``dev`` - pytest, ruff, pre-commit
   - ``docs`` - sphinx
 

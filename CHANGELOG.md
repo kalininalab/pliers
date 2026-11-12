@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### Fixed
+
+- **`model.monitor` on a classification metric ran backwards.** torchmetrics logs
+  binary metrics as `val_BinaryAUROC`, `val_BinaryMatthewsCorrCoef` and so on, and
+  `monitor_mode` only recognised the names without `Binary`, so they were minimised:
+  the worst checkpoint was kept and early stopping and the LR schedule were inverted.
+  Every shipped config monitors `val_loss`, which was always handled correctly.
+- **MCC of a constant predictor is 0.** torchmetrics returns an epsilon-regularised,
+  non-zero value when MCC is undefined (0.41 on the quickstart split, 0.08 on a
+  10%-positive split of 1000). Models and baselines now follow sklearn and report 0.
+  The `max` baseline's MCC, and that of any model that collapsed to one class, is
+  lower than in earlier results; see `REPRODUCING.md`.
+- **biotite 2.0 broke `structs.method: bsite` and `template`.** Its
+  `superimpose_structural_homologs` returns three values instead of four. `biotite` is
+  pinned below 2 until `parse_structs.py` is ported.
+- **`pliers-train` with no dataset set** failed with a `NoneType` `TypeError`. It now
+  stops with a one-line error naming `datamodule.filename`, and a wrong path is caught
+  before `tb_logs/` is created.
+
+### Changed
+
+- **Installation** instructions create the virtual environment (`uv venv`) before
+  `uv pip install`, which refuses to run without one.
+- **Docs quick start** follows the bundled example from the README, then GLASS.
+- **CI** tests Python 3.11 to 3.14, and the docs build fails on Sphinx warnings.
+
+### Removed
+
+- **The `baseline` extra.** It installed xgboost, which nothing imports.
+
 ## [v4.0.0] - 2026-11-06
 
 Renamed the project from **RINDTI** to **PLIERS** — *Protein–Ligand Interaction

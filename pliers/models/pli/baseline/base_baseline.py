@@ -6,14 +6,13 @@ from torchmetrics.functional import (
     auroc,
     average_precision,
     explained_variance,
-    matthews_corrcoef,
     mean_absolute_error,
     mean_squared_error,
     pearson_corrcoef,
     spearman_corrcoef,
 )
 
-from ...metrics import concordance_index, rm2
+from ...metrics import concordance_index, matthews_corrcoef, rm2
 
 
 class BaseBaseline:
@@ -58,7 +57,7 @@ class BaseBaseline:
             acc=accuracy(y_hat, y, task="binary").float().item(),
             auc=auroc(y_hat, y, task="binary").float().item(),
             auprc=average_precision(y_hat, y, task="binary").float().item(),
-            mcc=matthews_corrcoef(y_hat, y, task="binary").float().item(),
+            mcc=matthews_corrcoef(y_hat, y).item(),
         )
 
     def predict(self, test: pd.DataFrame) -> pd.DataFrame:

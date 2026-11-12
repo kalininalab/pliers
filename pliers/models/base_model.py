@@ -17,7 +17,7 @@ from torchmetrics import (
 )
 
 from ..data import TwoGraphData
-from .metrics import RM2, ConcordanceIndex, monitor_mode
+from .metrics import RM2, BinaryMatthewsCorrCoef, ConcordanceIndex, monitor_mode
 
 
 class BaseModel(LightningModule):
@@ -38,7 +38,9 @@ class BaseModel(LightningModule):
                 # PLI datasets are heavily imbalanced (Davis is ~7% positive), where
                 # AUROC flatters and average precision is the informative metric.
                 AveragePrecision(task=task, **kwargs),
-                MatthewsCorrCoef(task=task, **kwargs),
+                # Binary MCC is our own: torchmetrics scores a constant predictor
+                # above 0 (see metrics._mcc_from_confmat).
+                BinaryMatthewsCorrCoef() if num_classes == 2 else MatthewsCorrCoef(task=task, **kwargs),
             ]
         )
         self.train_metrics = metrics.clone(prefix="train_")

@@ -44,3 +44,18 @@ Add it to the right group in `pyproject.toml`, then regenerate the lockfile with
 Note that `workflow/scripts/get_datasets.py` deliberately declares its dependencies
 inline (PEP 723) rather than in `pyproject.toml`, because PyTDC pins `numpy<2` and
 cannot share an environment with the training stack.
+
+## Documentation
+
+The docs are Sphinx sources in `docs/source/`. Build them the way CI does, with
+warnings as errors:
+
+```bash
+uv pip install -e ".[docs]"
+uv run sphinx-build -W --keep-going -b html docs/source docs/_build
+```
+
+Read the Docs builds <https://pliers-bio.readthedocs.io> from `.readthedocs.yaml` on
+every push to `main`, and fails on any Sphinx warning, so a docs build that is
+clean locally is clean there. The API pages (`docs/source/modules/`) are generated
+from docstrings; a new public module needs an entry there to appear.

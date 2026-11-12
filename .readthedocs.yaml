@@ -6,12 +6,13 @@ build:
     python: "3.12"
   jobs:
     post_create_environment:
-      # conf.py imports pliers, so the whole dependency tree has to install.
-      # Pull the CPU build of torch explicitly: the default wheel drags in the
-      # CUDA runtime, several GB that will not fit in a Read the Docs builder.
-      - pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - pip install -e .[docs]
+      # Sphinx only, not the package: conf.py puts the repo on sys.path and mocks the
+      # training stack (autodoc_mock_imports), so torch is never needed. Installing it
+      # broke the build: with --index-url, torch's dependencies came from the PyTorch
+      # index, whose typing_extensions wheel this pip rejects. Keep the pins in step
+      # with the `docs` extra in pyproject.toml.
+      - pip install "sphinx>=8.1" "furo>=2024.8" "sphinx-autodoc-typehints>=2.5"
 
 sphinx:
   configuration: docs/source/conf.py
-  fail_on_warning: false
+  fail_on_warning: true

@@ -12,6 +12,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 from torchmetrics import Metric
+from torchmetrics.classification import BinaryMatthewsCorrCoef as _TorchBinaryMCC
+from torchmetrics.functional.classification import binary_confusion_matrix
 
 # Cap on the number of pairwise comparisons held in memory at once. n^2 over a whole
 # test split is millions of pairs, so the comparison is walked in bounded row chunks
@@ -35,6 +37,40 @@ def _gathered(state: list[Tensor] | Tensor) -> Tensor:
     if isinstance(state, Tensor):
         return state.reshape(-1)
     return torch.cat(state) if state else torch.empty(0)
+
+
+def _mcc_from_confmat(confmat: Tensor) -> Tensor:
+    """Matthews correlation from a binary ``[[tn, fp], [fn, tp]]`` confusion matrix.
+
+    MCC is undefined when any row or column of the confusion matrix is empty - most
+    commonly a model that predicts one class for every sample. Following sklearn, that
+    case is 0: no correlation between prediction and label. torchmetrics instead
+    substitutes an epsilon-regularised value, which gives a constant predictor a
+    non-zero score that depends only on the class balance (0.41 on three samples with
+    one positive, 0.08 on a 10%-positive split of 1000). That would credit the ``Max``
+    baseline, and any model that collapsed to one class, with skill it does not have.
+    """
+    tn, fp, fn, tp = confmat.reshape(-1).double()
+    denom = (tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)
+    if denom == 0:
+        return torch.tensor(0.0)
+    return ((tp * tn - fp * fn) / torch.sqrt(denom)).float()
+
+
+def matthews_corrcoef(preds: Tensor, target: Tensor, threshold: float = 0.5) -> Tensor:
+    """Binary MCC that is 0, not epsilon-regularised, for a constant predictor."""
+    return _mcc_from_confmat(binary_confusion_matrix(preds, target.long(), threshold=threshold))
+
+
+class BinaryMatthewsCorrCoef(_TorchBinaryMCC):
+    """torchmetrics' binary MCC, with :func:`_mcc_from_confmat`'s undefined case.
+
+    Keeps the torchmetrics class name so MetricCollection logs it under the same key
+    (``val_BinaryMatthewsCorrCoef``) and existing TensorBoard logs stay comparable.
+    """
+
+    def compute(self) -> Tensor:
+        return _mcc_from_confmat(self.confmat)
 
 
 class ConcordanceIndex(Metric):
@@ -191,6 +227,13 @@ def monitor_mode(monitor: str) -> str:
     for prefix in ("train_", "val_", "test_"):
         if monitor.startswith(prefix):
             monitor = monitor[len(prefix) :]
+            break
+    # Classification metrics are logged under their task-specific class names
+    # (``val_BinaryAUROC``), so match on the name with the task stripped. Without this
+    # every classification metric fell through to "min".
+    for task in ("Binary", "Multiclass", "Multilabel"):
+        if monitor.startswith(task):
+            monitor = monitor[len(task) :]
             break
     return "max" if monitor in _MAXIMISE else "min"
 

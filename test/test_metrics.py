@@ -12,10 +12,12 @@ import torch
 
 from pliers.models.metrics import (
     RM2,
+    BinaryMatthewsCorrCoef,
     ConcordanceIndex,
     best_baseline,
     boss,
     concordance_index,
+    matthews_corrcoef,
     monitor_mode,
     rm2,
 )
@@ -131,6 +133,60 @@ class TestRM2:
         assert RM2.higher_is_better is True
 
 
+class TestMatthewsCorrCoef:
+    """A constant predictor has no correlation with the label, so its MCC is 0.
+
+    torchmetrics returns an epsilon-regularised value instead: 0.408 for the quickstart
+    test split (labels 0, 0, 1, all predicted negative), which is what both the trained
+    model and the ``Max`` baseline reported before this was replaced.
+    """
+
+    @pytest.mark.parametrize("pred", [0.0, 1.0])
+    @pytest.mark.parametrize("target", [[0, 0, 1], [0] * 900 + [1] * 100])
+    def test_constant_predictor_scores_zero(self, pred, target):
+        target = torch.tensor(target)
+        preds = torch.full(target.shape, pred)
+        assert matthews_corrcoef(preds, target).item() == 0.0
+
+    def test_torchmetrics_does_not(self):
+        """Guards the reason this exists: if it starts failing, the wrapper can go."""
+        from torchmetrics.functional import matthews_corrcoef as tm_mcc
+
+        assert tm_mcc(torch.zeros(3), torch.tensor([0, 0, 1]), task="binary").item() == pytest.approx(0.408, abs=1e-3)
+
+    def test_matches_sklearn_when_defined(self):
+        from sklearn.metrics import matthews_corrcoef as sk_mcc
+
+        gen = torch.Generator().manual_seed(0)
+        for _ in range(20):
+            target = torch.randint(0, 2, (50,), generator=gen)
+            preds = torch.rand(50, generator=gen)
+            expected = sk_mcc(target.numpy(), (preds > 0.5).long().numpy())
+            assert matthews_corrcoef(preds, target).item() == pytest.approx(expected, abs=1e-6)
+
+    def test_perfect_and_inverted(self):
+        target = torch.tensor([0, 1, 0, 1])
+        assert matthews_corrcoef(target.float(), target).item() == pytest.approx(1.0)
+        assert matthews_corrcoef(1 - target.float(), target).item() == pytest.approx(-1.0)
+
+    def test_metric_accumulates_over_batches(self):
+        """The module form sees the whole epoch, not per-batch values."""
+        metric = BinaryMatthewsCorrCoef()
+        metric.update(torch.zeros(2), torch.tensor([0, 0]))
+        metric.update(torch.zeros(1), torch.tensor([1]))
+        assert metric.compute().item() == 0.0
+        metric.reset()
+        metric.update(torch.tensor([0.0, 1.0]), torch.tensor([0, 1]))
+        metric.update(torch.tensor([1.0, 0.0]), torch.tensor([1, 0]))
+        assert metric.compute().item() == pytest.approx(1.0)
+
+    def test_logged_name_is_unchanged(self):
+        """MetricCollection keys by class name; TensorBoard logs must stay comparable."""
+        from torchmetrics import MetricCollection
+
+        assert list(MetricCollection([BinaryMatthewsCorrCoef()]).keys()) == ["BinaryMatthewsCorrCoef"]
+
+
 class TestMonitorMode:
     """Checkpointing, early stopping and the LR scheduler all hardcoded "min"."""
 
@@ -149,6 +205,36 @@ class TestMonitorMode:
     )
     def test_mode(self, monitor, expected):
         assert monitor_mode(monitor) == expected
+
+    @pytest.mark.parametrize("num_classes", [2, 3])
+    def test_logged_classification_names_are_maximised(self, num_classes):
+        """Use the names the models actually log, not hand-typed ones.
+
+        torchmetrics logs ``val_BinaryAUROC``, not ``val_AUROC``. The list above only
+        had the latter, so it passed while every real classification monitor was
+        minimised: the worst checkpoint kept, early stopping and LR decay inverted.
+        """
+        from types import SimpleNamespace
+
+        from pliers.models.base_model import BaseModel
+
+        model = SimpleNamespace()
+        BaseModel._set_class_metrics(model, num_classes=num_classes)
+        names = list(model.val_metrics.keys())
+        assert names and all(n.startswith(("val_Binary", "val_Multiclass")) for n in names)
+        assert {n: monitor_mode(n) for n in names} == {n: "max" for n in names}
+
+    def test_logged_regression_names(self):
+        from types import SimpleNamespace
+
+        from pliers.models.base_model import BaseModel
+
+        model = SimpleNamespace()
+        BaseModel._set_reg_metrics(model)
+        errors = {"val_MeanAbsoluteError", "val_MeanSquaredError"}
+        names = list(model.val_metrics.keys())
+        assert errors <= set(names)
+        assert {n: monitor_mode(n) for n in names} == {n: "min" if n in errors else "max" for n in names}
 
     def test_unknown_metric_falls_back_to_min(self):
         """The previous behaviour, so nothing silently changes for an unlisted name."""

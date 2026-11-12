@@ -228,6 +228,15 @@ the weakest provenance link in the submission.
 
 ## What you cannot reproduce exactly
 
+- **MCC of a constant predictor is now 0.** The archived results were computed with
+  torchmetrics' MCC, which gives a non-zero, class-balance-dependent value when the
+  score is undefined (a model or baseline predicting one class for every sample): 0.084
+  for all-negative predictions on a 10%-positive split of 1000. PLIERS now returns 0, as
+  sklearn does. A fresh run therefore reports a lower MCC for the `max` baseline, and for
+  any model that collapsed to one class, than `results_summary.csv` and `baselines*.txt`
+  record. Every other MCC, and every other metric, is unchanged. The MCC floor in BOSS is
+  usually the ligand-only prior, which is not constant, but this has not been rechecked
+  against the archived tables.
 - **Split filenames have changed.** `split_data` and `parse_dataset` now put the seed in
   their output names, because a re-seeded run previously found the old files under the
   same name and silently reused them. A fresh build writes `prncn_15995058.tsv` where the

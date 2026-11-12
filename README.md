@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kalininalab/pliers/actions/workflows/ci.yaml/badge.svg)](https://github.com/kalininalab/pliers/actions/workflows/ci.yaml)
 [![codecov](https://codecov.io/gh/kalininalab/pliers/branch/main/graph/badge.svg?token=KWEX1R7FVS)](https://codecov.io/gh/kalininalab/pliers)
-[![Documentation](https://readthedocs.org/projects/pliers-bio/badge/?version=main)](https://pliers-bio.readthedocs.io/en/main/)
+[![Documentation](https://readthedocs.org/projects/pliers-bio/badge/?version=latest)](https://pliers-bio.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **P**rotein–**L**igand **I**nteraction **E**valuation, **R**epresentation and **S**plitting:
@@ -29,15 +29,68 @@ interactions (TSV)─┘
 
 ## Installation
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11 and `git`. PLIERS is installed from a clone, not from PyPI: the
+configs (`config/`) and the data pipeline (`workflow/`) live in the repository.
 
 ```bash
 git clone https://github.com/kalininalab/pliers
 cd pliers
+```
+
+### With uv (recommended)
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first, then:
+
+```bash
+uv venv                      # creates .venv
+source .venv/bin/activate
 uv pip install -e ".[dev,workflow]"
 ```
 
-On a CPU-only machine, add `--torch-backend=cpu` to get much smaller wheels.
+On a CPU-only machine, add `--torch-backend=cpu` to the last command to skip the
+multi-GB CUDA build of PyTorch:
+
+```bash
+uv pip install -e ".[dev,workflow]" --torch-backend=cpu
+```
+
+### With pip
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev,workflow]"
+```
+
+On a CPU-only machine, install the CPU build of PyTorch first; pip then keeps it:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[dev,workflow]"
+```
+
+### Extras
+
+| Extra | What it adds |
+|---|---|
+| `workflow` | snakemake and the data-preparation pipeline (needed for the quick start) |
+| `esm` | ESM protein language model features (`prots.features.method: esm`) |
+| `data` | dataset download helpers (gdown, requests) |
+| `dev` | pytest, ruff, pre-commit |
+| `docs` | sphinx, to build the documentation |
+
+Combine them as needed, e.g. `".[workflow,esm]"`. Training alone needs no extra:
+`pip install -e .` gives you `pliers-train`.
+
+### Check the install
+
+```bash
+pliers-train --help
+pytest -m "not gpu and not snakemake"   # needs the dev extra
+```
+
+All later commands assume the environment is active (`source .venv/bin/activate`).
 
 One pipeline option needs an external tool that is **not** pip-installable:
 
@@ -67,11 +120,9 @@ Step 1 needs no `--software-deployment-method conda`, because the test config us
 default random split; add it for a `cluster_target` split, which needs MMseqs2.
 
 `config/pli/quickstart.yaml` is one short run on the dataset step 1 builds, with
-`accelerator: auto` so a GPU is used when there is one. It replaces
-`config/test/default_pli.yaml` here: that file is a test fixture which expands into
-twelve model variants and omits the keys a real run needs, so training it failed on the
-first missing key (`KeyError: 'runs'`). Use `config/pli/base.yaml` for anything you
-intend to report.
+`accelerator: auto` so a GPU is used when there is one. The test dataset has only three
+test interactions, so its metrics show that the pipeline works, not how good the model
+is. Use `config/pli/base.yaml` for anything you intend to report.
 
 ## Running the benchmarks
 
@@ -181,7 +232,7 @@ usually what you want to report — vary one list at a time and re-run per axis.
 
 | Dataset | unit | threshold | meaning |
 |---|---|---|---|
-| Davis, GLASS, BindingDB | `nM` | 100 | Kd/Ki ≤ 100 nM is a positive (pKd ≥ 7) |
+| Davis, GLASS, BindingDB | `nM` | 100 | Kd/Ki < 100 nM is a positive (pKd > 7) |
 | KIBA | `score` | 12.1 | KIBA score ≥ 12.1 is a positive |
 
 The direction differs: for `nM` a lower value is a stronger interaction, for `score`
@@ -235,7 +286,7 @@ pytest -m "not gpu"                     # includes full pipeline integration tes
 
 ## Documentation
 
-<https://pliers-bio.readthedocs.io/en/main/>
+<https://pliers-bio.readthedocs.io/en/latest/>
 
 ## Citation
 

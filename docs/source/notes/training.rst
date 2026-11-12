@@ -19,7 +19,23 @@ keys that already exist can be set, so a typo fails immediately rather than bein
 silently ignored.
 
 Because the pipeline names its outputs by config hash, the pickle path is not
-predictable - glob the directory rather than hardcoding it.
+predictable. List what you have built, with the config behind each file:
+
+.. code:: console
+
+    python workflow/scripts/dataset_index.py 'datasets/*/results/prepare_all/*.pkl'
+
+Every shipped config leaves ``datamodule.filename`` as ``null``, and ``pliers-train``
+stops with a one-line error naming the key if it is unset or the file does not exist.
+
+Choosing what to monitor
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``model.monitor`` drives checkpointing, early stopping and the learning-rate schedule
+together. It is ``val_loss`` in every shipped config. Any logged metric works, under the
+name it is logged with: ``val_BinaryAveragePrecision`` or ``val_BinaryMatthewsCorrCoef``
+for classification, ``val_ConcordanceIndex`` for regression. Whether it is maximised or
+minimised follows from the name: errors and losses go down, everything else goes up.
 
 Metrics
 -------
@@ -35,6 +51,10 @@ Spearman, the concordance index and :math:`r_m^2`.
     comparison against that literature needs. The concordance index here is the
     Gonen-Heller index, not torchmetrics' ``ConcordanceCorrCoef``, which is Lin's CCC
     and a different statistic.
+
+    MCC is 0 when it is undefined, as it is for a model that predicts the same class
+    for every sample. That is sklearn's convention. torchmetrics returns a small
+    non-zero value there, which would credit a collapsed model with some skill.
 
 None of these numbers means much on its own: how high a metric can go depends on the
 split, and a random split is largely solvable from label frequencies alone. Score a

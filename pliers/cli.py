@@ -110,6 +110,29 @@ def check_task_matches(datamodule: PLIDataModule, module: str) -> None:
         )
 
 
+def check_dataset_file(config: dict) -> None:
+    """Raise with a usable message if ``datamodule.filename`` is unset or missing.
+
+    Every shipped config leaves it ``null`` (the pickle is named by a hash of the
+    snakemake config), so running one unchanged is the first thing most people try. It
+    used to fail deep inside ``os.path.basename`` with a ``NoneType`` TypeError, and a
+    wrong path failed only after ``tb_logs/`` had been created for the run.
+    """
+    filename = config.get("datamodule", {}).get("filename")
+    example = "--set datamodule.filename=datasets/<name>/results/prepare_all/<hash>.pkl"
+    if not filename:
+        raise ValueError(
+            f"datamodule.filename is not set. Point it at a dataset built by the snakemake "
+            f"pipeline, e.g. {example}. To list the datasets you have built, run: "
+            f"python workflow/scripts/dataset_index.py 'datasets/*/results/prepare_all/*.pkl'"
+        )
+    if not os.path.isfile(filename):
+        raise FileNotFoundError(
+            f"datamodule.filename {filename!r} does not exist (relative paths are resolved "
+            f"from {os.getcwd()}). Build it with snakemake first, or fix the path with {example}."
+        )
+
+
 def train(**kwargs) -> None:
     """Train the model, expanding any list-valued config entry into a sweep.
 
@@ -249,6 +272,10 @@ def train_cli() -> None:
     config = read_config(args.config)
     for assignment in args.overrides:
         apply_override(config, assignment)
+    try:
+        check_dataset_file(config)
+    except (ValueError, FileNotFoundError) as err:
+        parser.error(str(err))
     config["git_hash"] = get_git_hash()  # to know the version of the code
     train(**config)
 
