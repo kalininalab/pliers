@@ -29,8 +29,10 @@ def snakemake_config(snakemake_config_base: dict) -> dict:
     return deepcopy(snakemake_config_base)
 
 
-def run_snakemake(config: dict, tmpdir_factory) -> Path:
+def run_snakemake(config: dict, tmpdir_factory, targets: list[str] | None = None) -> Path:
     """Run the workflow on a throwaway copy of the test data.
+
+    ``targets`` names the rules to build up to; the default builds everything.
 
     Uses the Snakemake >=8 ``SnakemakeApi``; the module-level ``snakemake()``
     function this used to call was removed in Snakemake 8.
@@ -59,7 +61,8 @@ def run_snakemake(config: dict, tmpdir_factory) -> Path:
             resource_settings=ResourceSettings(cores=4),
             deployment_settings=DeploymentSettings(deployment_method={DeploymentMethod.CONDA}),
         )
-        workflow.dag(dag_settings=DAGSettings(forceall=True)).execute_workflow()
+        dag_settings = DAGSettings(forceall=True, targets=set(targets) if targets else set())
+        workflow.dag(dag_settings=dag_settings).execute_workflow()
     return tmpdir
 
 

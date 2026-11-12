@@ -1,11 +1,12 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from snakemake.utils import update_config, validate
 
 from pliers.utils import IterDict, read_config
 
-from .conftest import SNAKEMAKE_CONFIG_DIR, TEST_CONFIG, run_snakemake
+from .conftest import SNAKEMAKE_CONFIG_DIR, TEST_CONFIG, _only_result, run_snakemake
 
 # rglob, not listdir: the one-factor-at-a-time pipeline ablation lives in the
 # config/snakemake/ablation/ subdirectory, and a flat listdir both missed those configs
@@ -88,15 +89,52 @@ class TestSnakeMake:
         snakemake_config["drugs"]["edge_feats"] = edge_feats
         run_snakemake(snakemake_config, tmpdir_factory)
 
-    @pytest.mark.parametrize("split", ["random", "drug", "target", "cluster_target", "cluster_drug"])
-    def test_splits(self, split: str, snakemake_config: dict, tmpdir_factory: str):
-        """Test the dataset splitting methods.
+    def test_random_split(self, snakemake_config: dict, tmpdir_factory: str):
+        """The random split, built all the way to ``prepare_all``."""
+        snakemake_config["split_data"]["method"] = "random"
+        run_snakemake(snakemake_config, tmpdir_factory)
+
+    @pytest.mark.parametrize(
+        "split, id_col, clusters",
+        [
+            ("target", "Target_ID", None),
+            ("drug", "Drug_ID", None),
+            ("cluster_target", "Target_ID", "cluster_prots"),
+            ("cluster_drug", "Drug_ID", "cluster_drugs"),
+        ],
+    )
+    def test_cold_split_does_not_leak(
+        self, split: str, id_col: str, clusters: str, snakemake_config: dict, tmpdir_factory: str
+    ):
+        """No entity, or cluster of entities, is in more than one split.
+
+        Built only as far as ``split_data``. Five proteins and five ligands cannot be
+        dealt 70/20/10 by entity, so the test split usually comes out empty, and the
+        ``baseline`` rule rightly refuses an empty test split. The full build is
+        covered by ``test_random_split``; what a cold split adds is the grouping.
 
         ``cluster_target`` builds the MMseqs2 conda environment on first run; the CI
         job that runs these already has miniforge.
         """
         snakemake_config["split_data"]["method"] = split
-        run_snakemake(snakemake_config, tmpdir_factory)
+        root = run_snakemake(snakemake_config, tmpdir_factory, targets=["split_data"])
+        assert not (root / "results" / "prepare_all").exists(), "built past split_data"
+
+        inter = pd.read_csv(_only_result(root, "split_data"), sep="\t")
+        assert (inter["split"] == "train").any(), "train split is empty"
+        groups = inter[id_col]
+        if clusters:
+            # cluster_prots also holds mmseqs' intermediate *_ids.tsv and *_cluster.tsv.
+            table = [
+                path
+                for path in sorted((root / "results" / clusters).glob("*.tsv"))
+                if not path.name.endswith(("_ids.tsv", "_cluster.tsv"))
+            ]
+            assert len(table) == 1, f"expected one cluster table, got {table}"
+            groups = groups.map(pd.read_csv(table[0], sep="\t", index_col=id_col)["cluster"])
+            assert groups.notna().all(), "an interaction has no cluster"
+        splits_per_group = inter.assign(group=groups).groupby("group")["split"].nunique()
+        assert (splits_per_group == 1).all(), f"groups in several splits:\n{splits_per_group[splits_per_group > 1]}"
 
     @pytest.mark.parametrize("log", [True, False])
     def test_task_reg(self, log: bool, snakemake_config: dict, tmpdir_factory: str):
